@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react";
 import "./App.css";
 import CameraSelector from "./components/CameraSelector";
 import VideoStream from "./components/VideoStream";
@@ -17,13 +16,20 @@ function App() {
   } = useCameraSelection() || {};
 
   const {
-    streamUrl = "ws://localhost:3001",
+    streamUrl = "",
     connectionStatus = "disconnected",
     videoRef,
   } = useVideoStream(selectedCameras, isSelectionComplete) || {};
 
-  const { trackedPersons = [], detectionSequence = [] } =
-    usePersonTracking(videoRef) || {};
+  const {
+    trackedPersons = [],
+    detectionSequence = [],
+    isModelLoaded = false,
+    isDetecting = false,
+    loadingStatus = "Loading...",
+    detectionResults = [], // Add detection results for visualization
+    lastDetectionTime = null,
+  } = usePersonTracking(videoRef, connectionStatus === "connected") || {};
 
   return (
     <div className="app-container">
@@ -35,7 +41,23 @@ function App() {
           onCameraToggle={handleCameraToggle}
           onReset={resetSelection}
         />
+
+        {/* Add detection status */}
+        <div className="detection-status">
+          <h3>Detection Status</h3>
+          <div>Model: {isModelLoaded ? "✅ Loaded" : "⏳ Loading..."}</div>
+          <div>Status: {isDetecting ? "🔍 Detecting" : "⏸️ Idle"}</div>
+          <div>Stream: {connectionStatus}</div>
+          <div>
+            Last Detection:{" "}
+            {lastDetectionTime
+              ? new Date(lastDetectionTime).toLocaleTimeString()
+              : "None"}
+          </div>
+          <div>People Found: {trackedPersons.length}</div>
+        </div>
       </div>
+
       <div className="main-content">
         <div className="video-container">
           <h2>Camera Grid View</h2>
@@ -43,6 +65,8 @@ function App() {
             videoRef={videoRef}
             streamUrl={streamUrl}
             connectionStatus={connectionStatus}
+            detectionResults={detectionResults} // Pass detection results for overlay
+            isDetecting={isDetecting}
           />
         </div>
         <div className="tracking-results">
@@ -50,6 +74,9 @@ function App() {
           <PersonTracker
             trackedPersons={trackedPersons}
             detectionSequence={detectionSequence}
+            isModelLoaded={isModelLoaded}
+            isDetecting={isDetecting}
+            loadingStatus={loadingStatus}
           />
         </div>
       </div>

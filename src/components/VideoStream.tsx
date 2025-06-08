@@ -1,256 +1,226 @@
-import React, { RefObject, useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
+
+interface DetectionResult {
+  class: string;
+  score: number;
+  bbox: [number, number, number, number];
+  cameraIndex?: number;
+}
 
 interface VideoStreamProps {
-  videoRef: RefObject<HTMLVideoElement>;
+  videoRef: React.RefObject<HTMLVideoElement>;
   streamUrl: string;
-  connectionStatus: "disconnected" | "connecting" | "connected" | "error";
+  connectionStatus: string;
+  detectionResults?: DetectionResult[];
+  isDetecting?: boolean;
 }
 
 const VideoStream: React.FC<VideoStreamProps> = ({
   videoRef,
   streamUrl,
   connectionStatus,
+  detectionResults = [],
+  isDetecting = false,
 }) => {
-  // Add a retry count
-  const retryCountRef = useRef(0);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Set up video src when streamUrl changes
+  // Draw detection boxes on canvas
   useEffect(() => {
-    const videoElement = videoRef.current;
-    if (!videoElement) return;
-
-    // Force hardware acceleration and display-related properties
-    videoElement.style.transform = "translateZ(0)"; // Force hardware acceleration
-    videoElement.style.backfaceVisibility = "hidden";
-    videoElement.style.willChange = "transform";
-
-    // Clear previous state if no streamUrl
-    if (!streamUrl) {
-      videoElement.removeAttribute("src");
-      videoElement.load();
-      retryCountRef.current = 0; // Reset retry count
+    if (
+      !canvasRef.current ||
+      !videoRef.current ||
+      detectionResults.length === 0
+    ) {
+      // Clear canvas if no detections
+      if (canvasRef.current) {
+        const ctx = canvasRef.current.getContext("2d");
+        if (ctx) {
+          ctx.clearRect(
+            0,
+            0,
+            canvasRef.current.width,
+            canvasRef.current.height
+          );
+        }
+      }
       return;
     }
 
-    // Set up video with the streamUrl
-    console.log("Setting video source to:", streamUrl);
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    const ctx = canvas.getContext("2d");
 
-    // Set video properties directly
-    videoElement.muted = true;
-    videoElement.autoplay = true;
-    videoElement.playsInline = true;
-    videoElement.src = streamUrl;
+    if (!ctx) return;
 
-    // Add more debugging events
-    const eventNames = [
-      "loadstart",
-      "durationchange",
-      "loadedmetadata",
-      "loadeddata",
-      "progress",
-      "canplay",
-      "canplaythrough",
-      "play",
-      "playing",
-      "error",
-    ];
+    // Set canvas size to match video
+    const rect = video.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
 
-    const listeners: { [key: string]: EventListener } = {};
+    // Calculate scale factors
+    const scaleX = rect.width / video.videoWidth;
+    const scaleY = rect.height / video.videoHeight;
 
-    eventNames.forEach((name) => {
-      const listener = () => {
-        console.log(`Video event: ${name}`, {
-          readyState: videoElement.readyState,
-          networkState: videoElement.networkState,
-          paused: videoElement.paused,
-          currentTime: videoElement.currentTime,
-          duration: videoElement.duration,
-          videoWidth: videoElement.videoWidth,
-          videoHeight: videoElement.videoHeight,
-          error: videoElement.error,
-        });
-      };
-      listeners[name] = listener;
-      videoElement.addEventListener(name, listener);
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw detection boxes
+    detectionResults.forEach((detection) => {
+      const [x, y, width, height] = detection.bbox;
+
+      // Scale coordinates to canvas size
+      const scaledX = x * scaleX;
+      const scaledY = y * scaleY;
+      const scaledWidth = width * scaleX;
+      const scaledHeight = height * scaleY;
+
+      // Draw bounding box
+      ctx.strokeStyle = "#00FF00";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
+
+      // Draw label background
+      const label = `${detection.class} ${Math.round(detection.score * 100)}%`;
+      ctx.font = "16px Arial";
+      const textMetrics = ctx.measureText(label);
+      const textWidth = textMetrics.width;
+      const textHeight = 20;
+
+      ctx.fillStyle = "rgba(0, 255, 0, 0.8)";
+      ctx.fillRect(scaledX, scaledY - textHeight, textWidth + 10, textHeight);
+
+      // Draw label text
+      ctx.fillStyle = "#000";
+      ctx.fillText(label, scaledX + 5, scaledY - 5);
+
+      // Draw camera index if available
+      if (detection.cameraIndex !== undefined) {
+        const cameraLabel = `Cam ${detection.cameraIndex + 1}`;
+        ctx.fillStyle = "rgba(255, 0, 0, 0.8)";
+        ctx.fillRect(scaledX + scaledWidth - 50, scaledY, 50, 20);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "12px Arial";
+        ctx.fillText(cameraLabel, scaledX + scaledWidth - 45, scaledY + 15);
+      }
     });
 
-    // Add timing to try playing
-    let playAttempts = 0;
-    const attemptPlay = () => {
-      if (playAttempts >= 5) return;
-      playAttempts++;
-
-      console.log(`Attempting to play video (attempt ${playAttempts})`);
-
-      const playPromise = videoElement.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => console.log("Video playing successfully"))
-          .catch((err) => {
-            console.error("Play error:", err);
-
-            // Schedule another attempt
-            setTimeout(attemptPlay, 1000);
-          });
-      }
-    };
-
-    // Try playing when ready
-    if (videoElement.readyState >= 3) {
-      // HAVE_FUTURE_DATA
-      attemptPlay();
-    } else {
-      videoElement.addEventListener("canplay", attemptPlay, { once: true });
+    // Draw detection indicator
+    if (isDetecting) {
+      ctx.fillStyle = "rgba(255, 255, 0, 0.3)";
+      ctx.fillRect(0, 0, 100, 30);
+      ctx.fillStyle = "#000";
+      ctx.font = "14px Arial";
+      ctx.fillText("🔍 DETECTING", 5, 20);
     }
-
-    // Clean up event listeners
-    return () => {
-      eventNames.forEach((name) => {
-        if (listeners[name]) {
-          videoElement.removeEventListener(name, listeners[name]);
-        }
-      });
-      videoElement.removeEventListener("canplay", attemptPlay);
-    };
-  }, [streamUrl]);
-
-  // Separate useEffect for handling connection status changes
-  useEffect(() => {
-    const videoElement = videoRef.current;
-    if (!videoElement || !streamUrl || connectionStatus !== "connected") return;
-
-    // Play when connection status changes to connected
-    const playVideo = () => {
-      console.log("Attempting to play video");
-      videoElement
-        .play()
-        .then(() => console.log("Video playback started"))
-        .catch((err) => {
-          console.error("Play failed:", err);
-          // One more retry with user interaction simulation
-          setTimeout(() => {
-            if (videoElement) {
-              videoElement
-                .play()
-                .catch((e) => console.error("Final play attempt failed:", e));
-            }
-          }, 1000);
-        });
-    };
-
-    // Short delay to ensure everything is ready
-    const playTimer = setTimeout(playVideo, 500);
-
-    return () => clearTimeout(playTimer);
-  }, [connectionStatus, streamUrl]);
+  }, [detectionResults, isDetecting, videoRef]);
 
   return (
-    <div className="video-stream">
-      <div className="status-indicator">
-        <div className={`status-dot ${connectionStatus}`}></div>
-        <span className="status-text">{connectionStatus}</span>
-      </div>
-
-      <div
-        className="video-wrapper"
+    <div className="video-stream-container" style={{ position: "relative" }}>
+      <video
+        ref={videoRef}
+        src={streamUrl}
+        autoPlay
+        muted
+        playsInline
         style={{
-          position: "relative",
           width: "100%",
-          height: "480px",
-          backgroundColor: "#000",
+          height: "auto",
+          maxHeight: "70vh",
+          objectFit: "contain",
         }}
-      >
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            background: "#000",
-          }}
-          className={`video-player ${
-            connectionStatus === "connected" ? "active" : ""
-          }`}
-        />
+      />
 
-        {connectionStatus === "connecting" && (
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              alignItems: "center",
-              color: "white",
-              backgroundColor: "rgba(0,0,0,0.7)",
-              zIndex: 2,
-            }}
-          >
-            <div>Connecting to camera feed...</div>
-          </div>
-        )}
+      {/* Detection overlay canvas */}
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      />
 
-        {connectionStatus === "disconnected" && (
-          <div className="placeholder-message">
-            <p>Select 6 cameras to start streaming</p>
-          </div>
-        )}
-
-        {connectionStatus === "error" && (
-          <div className="error-overlay">
-            <p>Error connecting to camera stream</p>
-            <p>Please check that the proxy server is running</p>
-          </div>
-        )}
-      </div>
-
-      <div className="video-controls">
-        <button
-          onClick={() => {
-            const video = videoRef.current;
-            if (video) {
-              video
-                .play()
-                .then(() => console.log("Manual play successful"))
-                .catch((err) => console.error("Manual play failed:", err));
-            }
-          }}
-          disabled={connectionStatus !== "connected"}
-        >
-          Play
-        </button>
-        <button
-          onClick={() => videoRef.current?.pause()}
-          disabled={connectionStatus !== "connected"}
-        >
-          Pause
-        </button>
-      </div>
-
-      {/* Debug information */}
-      {connectionStatus === "connected" && (
+      {/* Status overlays */}
+      {connectionStatus === "connecting" && (
         <div
           style={{
-            fontSize: "12px",
-            color: "#666",
-            padding: "8px",
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            color: "white",
+            backgroundColor: "rgba(0, 0, 0, 0.7)",
+            zIndex: 2,
           }}
         >
-          <div>Format: {streamUrl.includes("webm") ? "WebM" : "MP4"}</div>
-          <div>Status: {connectionStatus}</div>
-          <div>
-            Video size:{" "}
-            {videoRef.current?.videoWidth}x{videoRef.current?.videoHeight}
-          </div>
+          <div>Connecting to camera feed...</div>
         </div>
       )}
+
+      {connectionStatus === "disconnected" && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            color: "white",
+            backgroundColor: "rgba(128, 128, 128, 0.7)",
+            zIndex: 2,
+          }}
+        >
+          <div>Camera feed disconnected</div>
+        </div>
+      )}
+
+      {connectionStatus === "error" && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            color: "white",
+            backgroundColor: "rgba(255, 0, 0, 0.7)",
+            zIndex: 2,
+          }}
+        >
+          <div>Connection error</div>
+        </div>
+      )}
+
+      {/* Detection stats */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 10,
+          right: 10,
+          background: "rgba(0, 0, 0, 0.7)",
+          color: "white",
+          padding: "5px 10px",
+          borderRadius: "5px",
+          fontSize: "12px",
+          zIndex: 2,
+        }}
+      >
+        People detected: {detectionResults.length}
+      </div>
     </div>
   );
 };

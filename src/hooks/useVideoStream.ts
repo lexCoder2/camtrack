@@ -1,7 +1,11 @@
-import { useState, useEffect, useRef } from "react";
-import muxjs from "mux.js";
+import { useState, useEffect, useRef, useCallback } from "react";
 
-type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+type ConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "error"
+  | "reconnecting";
 
 export function useVideoStream(
   selectedCameras: number[] = [],
@@ -16,335 +20,319 @@ export function useVideoStream(
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const bufferQueue = useRef<Uint8Array[]>([]);
   const processingQueue = useRef<boolean>(false);
-  const isActiveRef = useRef<boolean>(true); // Track if component is still mounted
+  const isActiveRef = useRef<boolean>(true);
   const initialSegmentReceived = useRef<boolean>(false);
-  // Add references for handlers and mux.js transmuxer
-  const updateEndHandlerRef = useRef<(() => void) | null>(null);
-  const transmuxerRef = useRef<any>(null);
 
-  // Function to check if codec is supported
-  const isCodecSupported = (mimeType: string): boolean => {
-    return MediaSource.isTypeSupported(mimeType);
-  };
+  // Enhanced error handling refs - reduced limits to prevent loops
+  const chunkErrorCount = useRef<number>(0);
+  const maxChunkErrors = 50; // Reduced from 500
+  const lastSuccessfulAppend = useRef<number>(Date.now());
+  const bufferCleanupInterval = useRef<NodeJS.Timeout | null>(null);
+  const videoRecoveryTimeout = useRef<NodeJS.Timeout | null>(null);
+  const isRecoveringRef = useRef<boolean>(false); // Prevent recovery loops
 
+  // Simplified buffer processing - no video error clearing during processing
+  const processBuffer = useCallback(() => {
+    if (
+      processingQueue.current ||
+      bufferQueue.current.length === 0 ||
+      isRecoveringRef.current
+    ) {
+      return;
+    }
+
+    processingQueue.current = true;
+
+    const processNextChunk = () => {
+      if (bufferQueue.current.length === 0 || !isActiveRef.current) {
+        processingQueue.current = false;
+        return;
+      }
+
+      const data = bufferQueue.current.shift();
+      if (!data) {
+        processingQueue.current = false;
+        return;
+      }
+
+      try {
+        if (
+          sourceBufferRef.current &&
+          mediaSourceRef.current &&
+          mediaSourceRef.current.readyState === "open" &&
+          !sourceBufferRef.current.updating
+        ) {
+          sourceBufferRef.current.appendBuffer(data);
+          lastSuccessfulAppend.current = Date.now();
+          chunkErrorCount.current = 0; // Reset error count on success
+        } else {
+          // Re-queue chunk if buffer not ready (max 3 retries)
+          if (data.byteLength > 0) {
+            bufferQueue.current.unshift(data);
+          }
+          setTimeout(() => {
+            processingQueue.current = false;
+            processBuffer();
+          }, 20);
+        }
+      } catch (error) {
+        chunkErrorCount.current++;
+        console.warn(
+          `Chunk append error ${chunkErrorCount.current}/${maxChunkErrors}:`,
+          error
+        );
+
+        // Just skip the corrupted chunk and continue - no recovery loops
+        if (chunkErrorCount.current < maxChunkErrors) {
+          setTimeout(processNextChunk, 50);
+        } else {
+          console.log("Too many chunk errors, clearing buffer and resetting");
+          // Clear buffer and reset counters
+          bufferQueue.current = [];
+          chunkErrorCount.current = 0;
+          processingQueue.current = false;
+        }
+      }
+    };
+
+    processNextChunk();
+  }, []);
+
+  // Simplified video error handler - no automatic recovery
+  const handleVideoError = useCallback((event: Event) => {
+    const video = videoRef.current;
+    if (!video || !isActiveRef.current || isRecoveringRef.current) return;
+
+    const error = video.error;
+
+    console.warn("Video error occurred:", {
+      currentTime: video.currentTime,
+      error: error ? { code: error.code, message: error.message } : null,
+      networkState: video.networkState,
+      readyState: video.readyState,
+      paused: video.paused,
+    });
+
+    // Don't attempt any recovery - just log the error
+    // The stream will continue with available buffer
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
+  // Buffer cleanup - simplified and safer
+  const cleanupSourceBuffer = useCallback(() => {
+    if (
+      !sourceBufferRef.current ||
+      !videoRef.current ||
+      isRecoveringRef.current
+    )
+      return;
+
+    try {
+      const video = videoRef.current;
+      const sourceBuffer = sourceBufferRef.current;
+
+      // Only cleanup if safe to do so
+      if (!video.error && !sourceBuffer.updating && video.buffered.length > 0) {
+        const currentTime = video.currentTime;
+        const bufferedStart = video.buffered.start(0);
+
+        // Remove old buffer data (keep last 20 seconds)
+        if (currentTime - bufferedStart > 20) {
+          const removeEnd = Math.max(bufferedStart, currentTime - 10);
+          sourceBuffer.remove(bufferedStart, removeEnd);
+        }
+      }
+    } catch (error) {
+      // Silently ignore cleanup errors
+    }
+  }, []);
+
+  // Simplified MediaSource setup
+  const setupMediaSource = useCallback(() => {
+    if (!videoRef.current || !isActiveRef.current) return;
+
+    try {
+      // Clean up existing MediaSource
+      if (mediaSourceRef.current) {
+        try {
+          mediaSourceRef.current.removeEventListener("sourceopen", () => {});
+          mediaSourceRef.current.removeEventListener("error", () => {});
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      }
+
+      const mediaSource = new MediaSource();
+      mediaSourceRef.current = mediaSource;
+
+      const objectURL = URL.createObjectURL(mediaSource);
+      setStreamUrl(objectURL);
+
+      const handleSourceOpen = () => {
+        if (!isActiveRef.current || !mediaSourceRef.current) return;
+
+        try {
+          const sourceBuffer = mediaSourceRef.current.addSourceBuffer(
+            'video/mp4; codecs="avc1.42E01E"'
+          );
+          sourceBufferRef.current = sourceBuffer;
+
+          // Simple updateend handler
+          const updateEndHandler = () => {
+            if (!isActiveRef.current) return;
+
+            processingQueue.current = false;
+
+            // Continue processing queued chunks with delay
+            if (bufferQueue.current.length > 0) {
+              setTimeout(processBuffer, 50);
+            }
+          };
+
+          sourceBuffer.addEventListener("updateend", updateEndHandler);
+
+          // Simple error handler - no recovery attempts
+          sourceBuffer.addEventListener("error", (event) => {
+            console.warn("SourceBuffer error:", event);
+            processingQueue.current = false;
+          });
+
+          // Start buffer cleanup interval (less frequent)
+          if (bufferCleanupInterval.current) {
+            clearInterval(bufferCleanupInterval.current);
+          }
+          bufferCleanupInterval.current = setInterval(
+            cleanupSourceBuffer,
+            30000
+          ); // Every 30 seconds
+        } catch (error) {
+          console.error("Error setting up source buffer:", error);
+          setConnectionStatus("error");
+        }
+      };
+
+      mediaSource.addEventListener("sourceopen", handleSourceOpen);
+
+      // Simple MediaSource error handler
+      mediaSource.addEventListener("error", (event) => {
+        console.warn("MediaSource error:", event);
+        // Don't attempt recovery
+      });
+    } catch (error) {
+      console.error("Error setting up MediaSource:", error);
+      setConnectionStatus("error");
+    }
+  }, [processBuffer, cleanupSourceBuffer]);
+
+  // Simplified WebSocket message handler
+  const handleWebSocketMessage = useCallback(
+    (event: MessageEvent) => {
+      if (!isActiveRef.current) return;
+
+      if (event.data instanceof ArrayBuffer) {
+        const data = new Uint8Array(event.data);
+
+        if (!initialSegmentReceived.current) {
+          initialSegmentReceived.current = true;
+          setConnectionStatus("connected");
+        }
+
+        // Prevent buffer overflow with smaller queue
+        if (bufferQueue.current.length > 10) {
+          bufferQueue.current.splice(0, 5); // Remove half the queue
+        }
+
+        bufferQueue.current.push(data);
+
+        if (!processingQueue.current && !isRecoveringRef.current) {
+          processBuffer();
+        }
+      }
+    },
+    [processBuffer]
+  );
+
+  // Simplified video element setup
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    // Only add essential event listeners
+    video.addEventListener("error", handleVideoError, true);
+
+    // Simple canplay handler
+    const handleCanPlay = () => {
+      if (video.paused && !video.error && isActiveRef.current) {
+        video.play().catch((e) => console.warn("Autoplay failed:", e));
+      }
+    };
+
+    video.addEventListener("canplay", handleCanPlay);
+
+    return () => {
+      video.removeEventListener("error", handleVideoError, true);
+      video.removeEventListener("canplay", handleCanPlay);
+    };
+  }, [handleVideoError]);
+
+  // Main effect - simplified connection management
   useEffect(() => {
     isActiveRef.current = true;
     initialSegmentReceived.current = false;
+    chunkErrorCount.current = 0;
+    isRecoveringRef.current = false;
 
-    // Safety check to ensure selectedCameras is an array
     const safeSelectedCameras = Array.isArray(selectedCameras)
       ? selectedCameras
       : [];
 
     if (!isSelectionComplete || safeSelectedCameras.length !== 6) {
       setConnectionStatus("disconnected");
-      setStreamUrl(""); // Clear the URL when no valid selection
+      setStreamUrl("");
 
-      // Clean up any existing WebSocket connection
+      // Cleanup
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
 
-      return;
-    }
-
-    // Try different MIME types for codec compatibility
-    const possibleMimeTypes = [
-      'video/mp4; codecs="avc1.42E01E"', // Standard H.264
-      'video/mp4; codecs="avc1.42001E"', // Baseline profile
-      'video/mp4; codecs="avc1.640028"', // High profile
-      "video/mp4", // Generic MP4
-      'video/webm; codecs="vp8"', // WebM with VP8
-      'video/webm; codecs="vp9"', // WebM with VP9
-      "video/webm", // Generic WebM
-    ];
-
-    // Find the first supported MIME type
-    let supportedMimeType = possibleMimeTypes.find(isCodecSupported);
-
-    if (!supportedMimeType) {
-      console.error("No supported video codec found for MediaSource");
-      setConnectionStatus("error");
-      return;
-    }
-
-    console.log(`Using codec: ${supportedMimeType}`);
-
-    // Set up MediaSource
-    const mediaSource = new MediaSource();
-    mediaSourceRef.current = mediaSource;
-
-    // Create object URL from MediaSource
-    const objectUrl = URL.createObjectURL(mediaSource);
-    setStreamUrl(objectUrl);
-
-    // Initialize mux.js transmuxer based on codec type
-    const isWebM = supportedMimeType.includes("webm");
-    const codecType = isWebM ? "webm" : "mp4";
-
-    if (isWebM) {
-      // For WebM: Use mux.js WebM tooling if needed
-      console.log("Using WebM format");
-      // No specific WebM transmuxer in mux.js
-    } else {
-      // For MP4: Create MP4 transmuxer
-      console.log("Using MP4 format with mux.js transmuxer");
-      try {
-        const transmuxer = new muxjs.mp4.Transmuxer({
-          keepOriginalTimestamps: true,
-          remux: true,
-        });
-
-        transmuxerRef.current = transmuxer;
-
-        transmuxer.on("data", (segment: any) => {
-          if (
-            !isActiveRef.current ||
-            !sourceBufferRef.current ||
-            !mediaSourceRef.current
-          )
-            return;
-
-          try {
-            // Get the init segment if this is the first data
-            if (!initialSegmentReceived.current) {
-              const initSegment = new Uint8Array(segment.initSegment);
-              if (initSegment.length > 0) {
-                console.log("Got init segment from mux.js", initSegment.length);
-
-                if (!sourceBufferRef.current.updating) {
-                  sourceBufferRef.current.appendBuffer(initSegment);
-                  initialSegmentReceived.current = true;
-                } else {
-                  bufferQueue.current.unshift(initSegment);
-                }
-              }
-            }
-
-            // Handle the media segment
-            const data = new Uint8Array(segment.data);
-            if (data.length > 0) {
-              if (sourceBufferRef.current.updating) {
-                bufferQueue.current.push(data);
-              } else {
-                try {
-                  sourceBufferRef.current.appendBuffer(data);
-                } catch (e) {
-                  console.error("Error appending processed segment:", e);
-                  bufferQueue.current.push(data);
-                }
-              }
-            }
-          } catch (e) {
-            console.error("Error handling transmuxed segment:", e);
-          }
-        });
-
-        transmuxer.on("error", (error: any) => {
-          console.error("Transmuxer error:", error);
-        });
-      } catch (e) {
-        console.error("Failed to initialize mux.js transmuxer:", e);
+      if (bufferCleanupInterval.current) {
+        clearInterval(bufferCleanupInterval.current);
+        bufferCleanupInterval.current = null;
       }
+
+      return;
     }
 
-    const handleSourceOpen = () => {
-      // Check if component is still mounted
+    setupMediaSource();
+
+    // Simplified WebSocket connection - no auto-reconnect loop
+    const connectToWebSocket = () => {
       if (!isActiveRef.current) return;
+
+      const cameraIdsParam = safeSelectedCameras.join(",");
+      const wsUrl = `ws://localhost:3001/?cameraIds=${cameraIdsParam}&codecType=mp4`;
 
       setConnectionStatus("connecting");
 
-      try {
-        // Create a SourceBuffer with the supported MIME type
-        const sourceBuffer = mediaSource.addSourceBuffer(supportedMimeType);
-        sourceBufferRef.current = sourceBuffer;
-
-        // Set mode to 'segments' for better compatibility
-        if ("mode" in sourceBuffer) {
-          sourceBuffer.mode = "segments";
-        }
-
-        // Process buffered data when the buffer is updated
-        const onUpdateEnd = () => {
-          processingQueue.current = false;
-          processBuffer();
-        };
-
-        sourceBuffer.addEventListener("updateend", onUpdateEnd);
-        updateEndHandlerRef.current = onUpdateEnd;
-
-        // Connect to WebSocket after MediaSource is ready
-        connectToWebSocket(safeSelectedCameras, codecType);
-      } catch (error) {
-        console.error("Error setting up MediaSource:", error);
-        setConnectionStatus("error");
-      }
-    };
-
-    mediaSource.addEventListener("sourceopen", handleSourceOpen);
-
-    return () => {
-      isActiveRef.current = false;
-      initialSegmentReceived.current = false;
-
-      // Clean up on unmount or when dependencies change
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-
-      // Clean up mux.js transmuxer
-      if (transmuxerRef.current) {
-        try {
-          transmuxerRef.current.reset();
-          transmuxerRef.current = null;
-        } catch (e) {
-          console.error("Error cleaning up transmuxer:", e);
-        }
-      }
-
-      // Clean up source buffer event listeners
-      const sourceBuffer = sourceBufferRef.current;
-      if (sourceBuffer && updateEndHandlerRef.current) {
-        try {
-          sourceBuffer.removeEventListener(
-            "updateend",
-            updateEndHandlerRef.current
-          );
-        } catch (e) {
-          console.error("Error removing updateend listener:", e);
-        }
-      }
-
-      // Close the media source if it's open
-      if (
-        mediaSourceRef.current &&
-        mediaSourceRef.current.readyState === "open"
-      ) {
-        try {
-          mediaSourceRef.current.endOfStream();
-        } catch (e) {
-          console.error("Error ending media stream:", e);
-        }
-      }
-
-      // Clean up the URL
-      if (streamUrl) {
-        URL.revokeObjectURL(streamUrl);
-      }
-
-      mediaSourceRef.current = null;
-      sourceBufferRef.current = null;
-      updateEndHandlerRef.current = null;
-      bufferQueue.current = [];
-      setConnectionStatus("disconnected");
-    };
-  }, [selectedCameras, isSelectionComplete]);
-
-  // Implement the connectToWebSocket function with mux.js processing
-  const connectToWebSocket = (
-    cameraIds: number[],
-    codecType: string = "mp4"
-  ) => {
-    if (!isActiveRef.current) return;
-
-    const cameraIdsParam = cameraIds.join(",");
-    // Include codec type in the WebSocket URL
-    const wsUrl = `ws://localhost:3001/?cameraIds=${cameraIdsParam}&codecType=${codecType}`;
-
-    try {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
-
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
-        if (!isActiveRef.current) {
-          ws.close();
-          return;
-        }
-
-        console.log("WebSocket connection opened");
-        ws.send(JSON.stringify({ type: "request_init", codecType }));
-      };
-
-      // Add these helper functions at the beginning of your hook
-      const formatHexByte = (byte: number): string => {
-        return byte.toString(16).padStart(2, "0");
-      };
-
-      const logBufferStart = (buffer: Uint8Array, length: number = 16): void => {
-        const hexValues = Array.from(
-          buffer.slice(0, Math.min(length, buffer.length))
-        )
-          .map(formatHexByte)
-          .join(" ");
-        console.log(`Buffer starts with: ${hexValues}`);
-      };
-
-      // Update the ws.onmessage handler
-      ws.onmessage = (event) => {
         if (!isActiveRef.current) return;
-
-        if (event.data instanceof ArrayBuffer) {
-          // Handle binary video data
-          const data = new Uint8Array(event.data);
-
-          // Log some bytes from the first few chunks for debugging
-          if (!initialSegmentReceived.current) {
-            const chunkSize = data.length;
-            console.log(`Received chunk of size: ${chunkSize} bytes`);
-            logBufferStart(data, 32); // Log first 32 bytes
-
-            // Set connection status to connected after receiving some data
-            setTimeout(() => {
-              if (isActiveRef.current) {
-                initialSegmentReceived.current = true;
-                setConnectionStatus("connected");
-              }
-            }, 100);
-          }
-
-          // Process the data
-          try {
-            if (
-              sourceBufferRef.current &&
-              mediaSourceRef.current &&
-              mediaSourceRef.current.readyState === "open"
-            ) {
-              if (!sourceBufferRef.current.updating) {
-                sourceBufferRef.current.appendBuffer(data);
-              } else {
-                bufferQueue.current.push(data);
-              }
-            } else {
-              bufferQueue.current.push(data);
-            }
-          } catch (err) {
-            console.error("Error appending buffer:", err);
-            bufferQueue.current.push(data);
-          }
-
-          // Make sure the queue processing starts
-          if (!processingQueue.current) {
-            processBuffer();
-          }
-        } else {
-          // Handle non-binary messages
-          try {
-            const message = JSON.parse(event.data);
-            console.log("WebSocket message:", message);
-          } catch (e) {
-            console.log("Received non-JSON message:", event.data);
-          }
-        }
+        console.log("WebSocket connected");
+        ws.send(JSON.stringify({ type: "request_init", codecType: "mp4" }));
       };
 
-      ws.onclose = (event) => {
-        console.log(`WebSocket closed: ${event.code} - ${event.reason}`);
+      ws.onmessage = handleWebSocketMessage;
+
+      ws.onclose = () => {
+        console.log("WebSocket disconnected");
         if (isActiveRef.current) {
-          setConnectionStatus("error");
+          setConnectionStatus("disconnected");
+          // No automatic reconnection to prevent loops
         }
       };
 
@@ -354,41 +342,39 @@ export function useVideoStream(
           setConnectionStatus("error");
         }
       };
-    } catch (error) {
-      console.error("Error connecting to WebSocket:", error);
-      if (isActiveRef.current) {
-        setConnectionStatus("error");
-      }
-    }
-  };
+    };
 
-  // Process buffer data
-  const processBuffer = () => {
-    if (
-      !isActiveRef.current ||
-      !sourceBufferRef.current ||
-      !mediaSourceRef.current ||
-      mediaSourceRef.current.readyState !== "open" ||
-      sourceBufferRef.current.updating ||
-      bufferQueue.current.length === 0
-    ) {
-      return;
-    }
+    connectToWebSocket();
 
-    processingQueue.current = true;
-    try {
-      const data = bufferQueue.current.shift();
-      if (data) {
-        sourceBufferRef.current.appendBuffer(data);
-        // updateend event will clear processingQueue.current
-      } else {
-        processingQueue.current = false;
+    return () => {
+      isActiveRef.current = false;
+      isRecoveringRef.current = false;
+
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
-    } catch (error) {
-      console.error("Error processing buffer:", error);
-      processingQueue.current = false;
-    }
-  };
+
+      if (bufferCleanupInterval.current) {
+        clearInterval(bufferCleanupInterval.current);
+        bufferCleanupInterval.current = null;
+      }
+
+      if (videoRecoveryTimeout.current) {
+        clearTimeout(videoRecoveryTimeout.current);
+        videoRecoveryTimeout.current = null;
+      }
+
+      if (streamUrl) {
+        URL.revokeObjectURL(streamUrl);
+      }
+    };
+  }, [
+    selectedCameras,
+    isSelectionComplete,
+    setupMediaSource,
+    handleWebSocketMessage,
+  ]);
 
   return {
     streamUrl,
