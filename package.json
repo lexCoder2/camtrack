@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "build": "tsc && vite build",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview",
+    "check-env": "node -e \"if (!require('fs').existsSync('.env')) { console.error('⚠️  .env file not found. Copy .env.example to .env and configure your settings.'); process.exit(1); }\"",
+    "start": "npm run check-env && npm run dev"
   },
   "dependencies": {
     "@tensorflow-models/coco-ssd": "^2.2.3",

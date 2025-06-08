@@ -14,6 +14,7 @@ A React-based security camera monitoring system that provides real-time person d
 ## Tech Stack
 
 ### Frontend
+
 - **React 19** with TypeScript
 - **TensorFlow.js** for AI-powered person detection
 - **COCO-SSD model** for object detection
@@ -21,6 +22,7 @@ A React-based security camera monitoring system that provides real-time person d
 - **Vite** for fast development and building
 
 ### Backend (Proxy Server)
+
 - **Node.js** with Express
 - **WebSocket Server** for streaming
 - **FFmpeg** for RTSP stream processing and video transcoding
@@ -36,17 +38,20 @@ A React-based security camera monitoring system that provides real-time person d
 ## Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone <repository-url>
    cd camtracker2
    ```
 
 2. **Install frontend dependencies**
+
    ```bash
    npm install
    ```
 
 3. **Install proxy server dependencies**
+
    ```bash
    cd proxy
    npm install
@@ -54,8 +59,9 @@ A React-based security camera monitoring system that provides real-time person d
    ```
 
 4. **Configure camera settings**
-   
+
    Edit `proxy/index.js` and update the RTSP URLs:
+
    ```js
    const rtspUrls = cameraIds.map(
      (id) =>
@@ -68,18 +74,20 @@ A React-based security camera monitoring system that provides real-time person d
 ### Starting the Application
 
 1. **Start the proxy server** (in one terminal):
+
    ```bash
    cd proxy
    npm start
    ```
 
 2. **Start the React application** (in another terminal):
+
    ```bash
    npm run dev
    ```
 
 3. **Access the application**
-   
+
    Open your browser and navigate to `http://localhost:5173`
 
 ### Using the Interface
@@ -113,8 +121,9 @@ detectionIntervalRef.current = setInterval(() => {
 }, 1000); // 1 second intervals
 
 // Confidence threshold
-const personDetections = predictions
-  .filter(prediction => prediction.class === 'person' && prediction.score > 0.5)
+const personDetections = predictions.filter(
+  (prediction) => prediction.class === "person" && prediction.score > 0.5
+);
 ```
 
 ### Stream Quality
@@ -123,9 +132,11 @@ Modify video quality in `proxy/index.js`:
 
 ```js
 // For MP4 output
-"-b:v", "1M",        // Bitrate
-"-r", "15",          // Frame rate
-"scale=480:270"      // Resolution per camera
+"-b:v",
+  "1M", // Bitrate
+  "-r",
+  "15", // Frame rate
+  "scale=480:270"; // Resolution per camera
 ```
 
 ## Project Structure
@@ -154,11 +165,13 @@ camtracker2/
 ## API Endpoints
 
 ### WebSocket Connection
+
 - **URL**: `ws://localhost:3001/?cameraIds=1,2,3,4,5,6&codecType=mp4`
 - **Purpose**: Real-time video streaming
 - **Format**: Binary video data
 
 ### Messages
+
 ```js
 // Client to Server
 { type: "request_init", codecType: "mp4" }
@@ -172,16 +185,19 @@ camtracker2/
 ## Performance Optimization
 
 ### Memory Management
+
 - Automatic buffer cleanup
 - Frame dropping during high load
 - Configurable chunk error limits
 
 ### Detection Optimization
+
 - WebGL acceleration when available
 - CPU fallback for compatibility
 - Optimized detection intervals
 
 ### Network Resilience
+
 - Automatic WebSocket reconnection
 - RTSP stream recovery
 - Exponential backoff retry logic
@@ -191,21 +207,25 @@ camtracker2/
 ### Common Issues
 
 **Video not loading:**
+
 - Check RTSP camera URLs and credentials
 - Verify FFmpeg installation
 - Ensure cameras support H.264 encoding
 
 **Detection not working:**
+
 - Check browser WebGL support
 - Verify TensorFlow.js model loading
 - Ensure video element has valid frames
 
 **High CPU usage:**
+
 - Reduce detection frequency
 - Lower video resolution/bitrate
 - Use hardware acceleration if available
 
 **Connection drops:**
+
 - Check network stability
 - Verify camera stream availability
 - Monitor proxy server logs
@@ -213,22 +233,25 @@ camtracker2/
 ### Debug Mode
 
 Enable debug logging:
+
 ```js
 // In proxy/index.js
 console.log("FFmpeg command:", ffmpegArgs.join(" "));
 
 // In browser console
-localStorage.setItem('debug', 'true');
+localStorage.setItem("debug", "true");
 ```
 
 ## Development
 
 ### Building for Production
+
 ```bash
 npm run build
 ```
 
 ### Linting
+
 ```bash
 npm run lint
 ```
@@ -248,6 +271,7 @@ This project is licensed under the MIT License.
 ## Support
 
 For issues and support:
+
 - Check the troubleshooting section
 - Review console logs for errors
 - Ensure all prerequisites are met

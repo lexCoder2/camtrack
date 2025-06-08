@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import config, { buildWebSocketUrl } from "../config";
 
 type ConnectionStatus =
   | "disconnected"
@@ -25,7 +26,7 @@ export function useVideoStream(
 
   // Enhanced error handling refs - reduced limits to prevent loops
   const chunkErrorCount = useRef<number>(0);
-  const maxChunkErrors = 50; // Reduced from 500
+  const maxChunkErrors = config.detection.maxChunkErrors; // Reduced from 500
   const lastSuccessfulAppend = useRef<number>(Date.now());
   const bufferCleanupInterval = useRef<NodeJS.Timeout | null>(null);
   const videoRecoveryTimeout = useRef<NodeJS.Timeout | null>(null);
@@ -253,6 +254,42 @@ export function useVideoStream(
     [processBuffer]
   );
 
+  // WebSocket connection using config
+  const connectToWebSocket = useCallback(() => {
+    if (!isActiveRef.current) return;
+
+    const wsUrl = buildWebSocketUrl(selectedCameras, "mp4");
+
+    setConnectionStatus("connecting");
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+      if (!isActiveRef.current) return;
+      console.log("WebSocket connected");
+      ws.send(JSON.stringify({ type: "request_init", codecType: "mp4" }));
+    };
+
+    ws.onmessage = handleWebSocketMessage;
+
+    ws.onclose = () => {
+      console.log("WebSocket disconnected");
+      if (isActiveRef.current) {
+        setConnectionStatus("disconnected");
+        // No automatic reconnection to prevent loops
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      if (isActiveRef.current) {
+        setConnectionStatus("error");
+      }
+    };
+  }, [handleWebSocketMessage]);
+
   // Simplified video element setup
   useEffect(() => {
     const video = videoRef.current;
@@ -306,44 +343,6 @@ export function useVideoStream(
     }
 
     setupMediaSource();
-
-    // Simplified WebSocket connection - no auto-reconnect loop
-    const connectToWebSocket = () => {
-      if (!isActiveRef.current) return;
-
-      const cameraIdsParam = safeSelectedCameras.join(",");
-      const wsUrl = `ws://localhost:3001/?cameraIds=${cameraIdsParam}&codecType=mp4`;
-
-      setConnectionStatus("connecting");
-
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      ws.binaryType = "arraybuffer";
-
-      ws.onopen = () => {
-        if (!isActiveRef.current) return;
-        console.log("WebSocket connected");
-        ws.send(JSON.stringify({ type: "request_init", codecType: "mp4" }));
-      };
-
-      ws.onmessage = handleWebSocketMessage;
-
-      ws.onclose = () => {
-        console.log("WebSocket disconnected");
-        if (isActiveRef.current) {
-          setConnectionStatus("disconnected");
-          // No automatic reconnection to prevent loops
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-        if (isActiveRef.current) {
-          setConnectionStatus("error");
-        }
-      };
-    };
-
     connectToWebSocket();
 
     return () => {
@@ -373,7 +372,7 @@ export function useVideoStream(
     selectedCameras,
     isSelectionComplete,
     setupMediaSource,
-    handleWebSocketMessage,
+    connectToWebSocket,
   ]);
 
   return {
