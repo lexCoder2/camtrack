@@ -1,15 +1,12 @@
-# CamTracker2 - Real-time Security Camera Person Detection System
+# CamTracker - Real-time Security Camera Person Detection
 
-A React-based security camera monitoring system that provides real-time person detection and tracking across multiple RTSP camera feeds using AI/ML models.
+A React-based security camera monitoring for 6 cameras of dahua system that provides real-time person detection and tracking across multiple RTSP camera feeds using AI/ML models.
 
 ## Features
 
 - **Multi-Camera Support**: Monitor up to 6 security cameras simultaneously in a 2x3 grid layout
 - **Real-time Person Detection**: Uses TensorFlow.js and COCO-SSD model for accurate person detection
 - **Person Tracking**: Tracks individuals across camera feeds with unique IDs
-- **Live Streaming**: Real-time RTSP stream processing with WebSocket connections
-- **Resilient Connection**: Automatic reconnection and error recovery for stable streaming
-- **Interactive UI**: Modern React interface with camera selection and detection status
 
 ## Tech Stack
 
@@ -35,40 +32,6 @@ A React-based security camera monitoring system that provides real-time person d
 - RTSP security cameras (configured for H.264 streaming)
 - Modern web browser with WebGL support
 
-## Installation
-
-1. **Clone the repository**
-
-   ```bash
-   git clone <repository-url>
-   cd camtracker2
-   ```
-
-2. **Install frontend dependencies**
-
-   ```bash
-   npm install
-   ```
-
-3. **Install proxy server dependencies**
-
-   ```bash
-   cd proxy
-   npm install
-   cd ..
-   ```
-
-4. **Configure camera settings**
-
-   Edit `proxy/index.js` and update the RTSP URLs:
-
-   ```js
-   const rtspUrls = cameraIds.map(
-     (id) =>
-       `rtsp://admin:pass1111@192.168.6.160:554/cam/realmonitor?channel=${id}&subtype=0`
-   );
-   ```
-
 ## Usage
 
 ### Starting the Application
@@ -90,15 +53,6 @@ A React-based security camera monitoring system that provides real-time person d
 
    Open your browser and navigate to `http://localhost:5173`
 
-### Using the Interface
-
-1. **Select Cameras**: Choose exactly 6 cameras from the 16 available options
-2. **View Live Feed**: Once cameras are selected, the 2x3 grid video feed will start
-3. **Monitor Detection**: Watch real-time person detection with bounding boxes
-4. **Track People**: View tracked individuals in the sidebar with confidence scores and timestamps
-
-## Configuration
-
 ### Camera Settings
 
 Modify camera configuration in `proxy/index.js`:
@@ -106,7 +60,7 @@ Modify camera configuration in `proxy/index.js`:
 ```js
 // Update RTSP URL pattern
 const rtspUrls = cameraIds.map(
-  (id) => `rtsp://username:password@camera-ip:port/stream-path?channel=${id}`
+  (id) => `rtsp://username:password@camera-ip:port/cam?channel=${id}`
 );
 ```
 
@@ -182,26 +136,6 @@ camtracker2/
 { type: "pong", timestamp: Date.now() }
 ```
 
-## Performance Optimization
-
-### Memory Management
-
-- Automatic buffer cleanup
-- Frame dropping during high load
-- Configurable chunk error limits
-
-### Detection Optimization
-
-- WebGL acceleration when available
-- CPU fallback for compatibility
-- Optimized detection intervals
-
-### Network Resilience
-
-- Automatic WebSocket reconnection
-- RTSP stream recovery
-- Exponential backoff retry logic
-
 ## Troubleshooting
 
 ### Common Issues
@@ -261,18 +195,8 @@ npm run lint
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+4. Submit a pull request
 
 ## License
 
 This project is licensed under the MIT License.
-
-## Support
-
-For issues and support:
-
-- Check the troubleshooting section
-- Review console logs for errors
-- Ensure all prerequisites are met
-- Verify camera compatibility
